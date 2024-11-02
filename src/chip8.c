@@ -26,12 +26,66 @@ const uint8_t font_sprite[] =
 };
 
 
+/////////////////////
+/* Initialization */
+///////////////////
+chip8* chip8Init() {
+    chip8* cpu = malloc(sizeof(chip8));
 
-///////////////////////////////////
+    cpu->ram = malloc(RAM_SIZE);
+    cpu->display = malloc(DISPLAY_SIZE*sizeof(bool));
+    cpu->s=init_stack(STACK_SIZE);
+    cpu->registers=malloc(NUM_REGISTERS);
+    cpu->PC=0x200;
+    cpu->I=0;
+    cpu->delay_timer=UINT8_MAX;
+    cpu->sound_timer=UINT8_MAX;
+    cpu->keypad=calloc(16, sizeof(bool));
+
+    return cpu;
+}
+
+void chip8Free(chip8* cpu) {
+    free(cpu->ram);
+    free(cpu->display);
+    free_stack(cpu->s);
+    free(cpu->registers);
+    free(cpu->keypad);
+    free(cpu);
+    return;
+}
+
+
+void chip8LoadRom(chip8* cpu, const char* path) {
+    // Read instructions from file
+    FILE *fileptr;
+    long filelen;
+
+    fileptr = fopen(path, "rb");  // Open the file in binary mode
+    fseek(fileptr, 0, SEEK_END);          // Jump to the end of the file
+    filelen = ftell(fileptr);             // Get the current byte offset in the file
+    rewind(fileptr);                      // Jump back to the beginning of the file
+
+    fread(cpu->ram + 0x200, filelen, 1, fileptr); // Read in the entire file
+    fclose(fileptr); // Close the file
+
+    return;
+}
+
+
+void chip8SetFont(chip8* cpu) {
+    for (size_t i = 0; i < 80; i++) {
+        cpu->ram[i] = font_sprite[i];
+    }
+}
+
+
+
+ ///////////////////////////////////
 /* Instruction process functions */
 //////////////////////////////////
 
-uint16_t fetch(chip8* cpu) {
+uint16_t chip8Fetch(chip8* cpu) {
     uint16_t instruction = 0;
     // Combine two successive bytes from ram that form one instruction
     // And increments program counter (PC) by 2;
@@ -41,7 +95,7 @@ uint16_t fetch(chip8* cpu) {
 }
 
 // Decode and execute instruction
-void decode(chip8* cpu, uint16_t instruction) {
+void chip8Decode(chip8* cpu, uint16_t instruction) {
     uint8_t type = (instruction & FIRST_NIBBLE_MASK) >> 12; // First nibble
     uint8_t x = (instruction & SECOND_NIBBLE_MASK) >> 8; // Second nibble
     uint8_t y = (instruction & THIRD_NIBBLE_MASK) >> 4; // Third nibble
@@ -188,21 +242,35 @@ void decode(chip8* cpu, uint16_t instruction) {
 
     // DXYN (Display)
     case 0xD:
-        uint8_t pixel;
-        (cpu->registers)[0xF] = 0;
+         uint8_t x_coord_init = cpu->registers[x] % DISPLAY_WIDTH;
 
-        for (int yline = 0; yline < n; yline++) {
-            pixel = (cpu->ram)[cpu->I + yline];
-            
-            for (int xline = 0; xline < 8; xline++) {
-                if ((pixel & (0x80 >> xline)) != 0) {
-                    if ((cpu->display)[(x + xline + ((y+yline)*DISPLAY_HEIGHT))] == 1) (cpu->registers)[0xF] = 1;
+            uint8_t x_coord = x_coord_init;
+            uint8_t y_coord = cpu->registers[y] % DISPLAY_HEIGHT;
 
-                    (cpu->display)[(x + xline + ((y+yline)*DISPLAY_HEIGHT))] ^= 1;
+            cpu->registers[0xF] = 0;
+
+            for (int i = 0; i < n; i++) {
+                uint8_t sprite_byte = cpu->ram[cpu->I + i];
+                for (int j = 7; j >= 0; j--) {
+                    uint8_t pixel = (sprite_byte >> j) & 1;
+                    int screen_pixel_index = y_coord * DISPLAY_WIDTH + x_coord;
+
+                    if ((pixel == 1) && (cpu->display[screen_pixel_index] == 0)) {
+                        cpu->display[screen_pixel_index] = 1;
+                        cpu->registers[0xF] = 1;
+                    } else if ((pixel == 1) && (cpu->display[screen_pixel_index] == 1)) {
+                        cpu->display[screen_pixel_index] = 0;
+                    }
+
+                    x_coord++;
+                    if (x_coord >= DISPLAY_WIDTH) break;
                 }
-            }
-        }
 
+                x_coord = x_coord_init;
+                y_coord++;
+
+                if (y_coord >= DISPLAY_HEIGHT) break;
+            };
         break;
 
     // Keyboard inputs
@@ -210,12 +278,12 @@ void decode(chip8* cpu, uint16_t instruction) {
         switch (nn) {
         // EX9E (Skip if key corresponding to VX is pressed)
         case 0x9E:
-            if (cpu->keypressed != -1 && cpu->keypressed == (cpu->registers)[x]) cpu->PC += 2;
+            if (cpu->keypad[cpu->registers[x]]) cpu->PC += 2;
             break;
 
         // EXA1 (Skip if key corresponding to VX is not pressed)
         case 0xA1:
-            if (cpu->keypressed == -1 || cpu->keypressed != (cpu->registers)[x]) cpu->PC += 2;
+            if (!cpu->keypad[cpu->registers[x]]) cpu->PC += 2;
             break;
 
         default:
@@ -251,10 +319,18 @@ void decode(chip8* cpu, uint16_t instruction) {
 
             // FX0A (Blocks execution while waiting for a key press)
             // Note: this is done by decrementing the program counter (PC) unless a key is pressed
-            case 0x0A:
-                if (cpu->keypressed != -1) (cpu->registers)[x] = cpu->keypressed;
-                else cpu->PC -= 2;
-                break; 
+            case 0x0A: {
+                bool found = false;
+                for (int i = 0; i < 16; i++) {
+                    if (cpu->keypad[i] == 1) {
+                        cpu->registers[x] = i;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) cpu->PC -= 2;
+                break;
+            }
             
             // FX29 (Font character)
             // Note: a character (8bit = 1byte) is represented by a sprite of 5 bytes located in the first 80 bytes in the ram (80/5 = 16 characters)
@@ -303,16 +379,119 @@ void decode(chip8* cpu, uint16_t instruction) {
 }
 
 
+void chip8DecrementTimers(chip8* cpu) {
+    cpu->delay_timer--;
+    cpu->sound_timer--;
+}
+
+
+void chip8KeypadInput(chip8* cpu) {
+    if (IsKeyDown(88)) {
+        cpu->keypad[0x0] = 1;
+    } else if (IsKeyUp(KEY_X)) {
+        cpu->keypad[0x0] = 0;
+    }
+    if (IsKeyDown(49)) {
+        cpu->keypad[0x1] = 1;
+    } else if (IsKeyUp(KEY_ONE)) {
+        cpu->keypad[0x1] = 0;
+    }
+    if (IsKeyDown(50)) {
+        cpu->keypad[0x2] = 1;
+    } else if (IsKeyUp(KEY_TWO)) {
+        cpu->keypad[0x2] = 0;
+    }
+    if (IsKeyDown(51)) {
+        cpu->keypad[0x3] = 1;
+    } else if (IsKeyUp(KEY_THREE)) {
+        cpu->keypad[0x3] = 0;
+    }
+    if (IsKeyDown(81)) {
+        cpu->keypad[0x4] = 1;
+    } else if (IsKeyUp(KEY_Q)) {
+        cpu->keypad[0x4] = 0;
+    }
+    if (IsKeyDown(87)) {
+        cpu->keypad[0x5] = 1;
+    } else if (IsKeyUp(KEY_W)) {
+        cpu->keypad[0x5] = 0;
+    }
+    if (IsKeyDown(69)) {
+        cpu->keypad[0x6] = 1;
+    } else if (IsKeyUp(KEY_E)) {
+        cpu->keypad[0x6] = 0;
+    }
+    if (IsKeyDown(65)) {
+        cpu->keypad[0x7] = 1;
+    } else if (IsKeyUp(KEY_A)) {
+        cpu->keypad[0x7] = 0;
+    }
+    if (IsKeyDown(83)) {
+        cpu->keypad[0x8] = 1;
+    } else if (IsKeyUp(KEY_S)) {
+        cpu->keypad[0x8] = 0;
+    }
+    if (IsKeyDown(68)) {
+        cpu->keypad[0x9] = 1;
+    } else if (IsKeyUp(KEY_D)) {
+        cpu->keypad[0x9] = 0;
+    }
+    if (IsKeyDown(90)) {
+        cpu->keypad[0xA] = 1;
+    } else if (IsKeyUp(KEY_Z)) {
+        cpu->keypad[0xA] = 0;
+    }
+    if (IsKeyDown(67)) {
+        cpu->keypad[0xB] = 1;
+    } else if (IsKeyUp(KEY_C)) {
+        cpu->keypad[0xB] = 0;
+    }
+    if (IsKeyDown(52)) {
+        cpu->keypad[0xC] = 1;
+    } else if (IsKeyUp(KEY_FOUR)) {
+        cpu->keypad[0xC] = 0;
+    }
+    if (IsKeyDown(82)) {
+        cpu->keypad[0xD] = 1;
+    } else if (IsKeyUp(KEY_R)) {
+        cpu->keypad[0xD] = 0;
+    }
+    if (IsKeyDown(70)) {
+        cpu->keypad[0xE] = 1;
+    } else if (IsKeyUp(KEY_F)) {
+        cpu->keypad[0xE] = 0;
+    }
+    if (IsKeyDown(86)) {
+        cpu->keypad[0xF] = 1;
+    } else if (IsKeyUp(KEY_V)) {
+        cpu->keypad[0xF] = 0;
+    }
+}
+ 
+
+
+void chip8Process(chip8* cpu) {
+
+    // Get Keyboard key pressed
+    chip8KeypadInput(cpu);
+
+    // Decrement timers
+    chip8DecrementTimers(cpu);
+
+    /* process instruction */
+    for (int i = 0; i < INSTRUCTIONS_PER_FRAME; i++) {
+        uint16_t instruction = chip8Fetch(cpu);
+        chip8Decode(cpu, instruction);
+    }
+
+}
+
 
 ////////////////////////
 /* Graphics function */
 ///////////////////////
 
-void display_set_pixel(chip8* cpu, uint8_t x, uint8_t y, bool on) {
-    (cpu->display)[x + DISPLAY_WIDTH*y] = on;
-}
-
-void draw_display(chip8* cpu) {
+void chip8DrawDisplay(chip8* cpu) {
     for (size_t i = 0; i < DISPLAY_WIDTH; i++) {
         for (size_t j = 0; j < DISPLAY_HEIGHT; j++) {
             if ((cpu->display)[i + DISPLAY_WIDTH*j]) DrawRectangle(i*CASE_SIZE, j*CASE_SIZE, CASE_SIZE, CASE_SIZE, WHITE);

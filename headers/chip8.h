@@ -8,10 +8,11 @@
 #define STACK_SIZE 512
 #define NUM_REGISTERS 16
 #define DISPLAY_SIZE 2048
-#define DISPLAY_WIDTH 32
-#define DISPLAY_HEIGHT 64
+#define DISPLAY_WIDTH 64
+#define DISPLAY_HEIGHT 32
 #define TARGET_FPS 60
-#define CASE_SIZE 10
+#define INSTRUCTIONS_PER_FRAME 10
+#define CASE_SIZE 20
 
 /*
 SHIFT_INSTRUCTION_COSMAC_VIP :
@@ -38,20 +39,30 @@ typedef struct {
     size_t I;
     uint8_t delay_timer;
     uint8_t sound_timer;
-    int8_t keypressed; // -1 if no key is pressed
+    bool* keypad;
 } chip8;
 
 
 extern const uint8_t font_sprite[];
 
 
+// Initialization
+chip8* chip8Init(void);
+void chip8Free(chip8*);
+void chip8LoadRom(chip8*, const char*);
+void chip8SetFont(chip8*);
+
 // Instruction process
-uint16_t fetch(chip8*);
-void decode(chip8*, uint16_t);
+uint16_t chip8Fetch(chip8*);
+void chip8Decode(chip8*, uint16_t);
+void chip8DecrementTimers(chip8*);
+void chip8KeypadInput(chip8*);
+
+void chip8Process(chip8*);
+
 
 
 // Graphics
-void display_set_pixel(chip8*, uint8_t, uint8_t, bool);
-void draw_display(chip8* cpu);
+void chip8DrawDisplay(chip8* cpu);
 
 #endif // (ClassName_H)
