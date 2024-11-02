@@ -14,7 +14,9 @@ int main(int argc, char* argv[]) {
 		switch (argv[1][1])
 		{
 			case 'f':
-                sprintf(filename, &argv[1][2]);
+                int shift = 1;
+                while (argv[1][2+shift] == ' ') shift++;
+                sprintf(filename, &argv[1][2+shift]);
 				break;
 
 			default:
