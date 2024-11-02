@@ -1,7 +1,0 @@
-{
-    "files.associations": {
-        "stack.h": "c",
-        "common.h": "c",
-        "chip8.h": "c"
-    }
-}
